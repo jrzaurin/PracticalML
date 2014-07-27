@@ -1,0 +1,162 @@
+---
+title: "Prediction using Qualitative Activity Recognition"
+output: html_document
+---
+
+**Abstract**
+
+I use the dataset collected and presented in [Velloso et al., 2013](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) 
+to built a prediction tool with the aim of predicting the quality of an executing activity, precisely weight lifting. After exploring a variety of techniques I find that the best results for this particular dataset is found when using a Random Forest technique$^{[2]}$. Using this approach I find an impressive accuracy of $\sim 99\%$. The most important variables include yaw_belt, roll_belt or magnet_dumbbell among others, while variables such as magnet_forearm_y or accel_forearm_z have almost no predictive power. 
+
+**1. Introduction**
+
+The studies of human activity recognition have usually focused in quantified how much an activity is done by a series of individuals relative to other types of activities (e.g. walking vs running). In this work however, I will use the [Velloso et al., 2013](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) dataset to predict the quality of an executing activity, i.e. "how well" the activity is done. 
+
+In particular, Velloso et al, asked a series of participants to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). These are the classes I will try to predict during this work, specified in the dataset provided as variable "classe". More details on the experiment can be found in that paper. 
+
+**2. Exploratory Analysis**
+
+In the first place, prior to the exploratory analysis, the training dataset was divided into training and testing (or cross validation dataset). All data manipulation performed to the training dataset will be systematically perform on the cross validation dataset and eventually on the testing dataset of 20 observation. 
+
+The R code for the procedures described here, and in the following sections can be found [here](https://github.com/jrzaurin/PracticalML). Note that the cvs files downloaded from the cousera web (pml-training.csv and pml-testing.csv) page are not uploaded to the repo. If the reader intends to test the code those files must be present in the working directory. 
+
+An exhaustive exploratory analysis was carried out in order to better understand the datasets and adequately select a subset of variables with the highest predictive power. In the first place, it is important to mention that there is a substantial number of variables that are "dominated" by NA values in the training set we are provided. Rather than directly deleting this variables, a first approach would be using one of the many existing NA substitution techniques to "complete" the dataset (e.g. the traditional mean or regression substitution, or the "state of the art" Maximum likelihood (ML)
+and multiple imputation (MI)$^{[3]}$). 
+
+However, some of these techniques rely on the fact that the NA values are distributed at random (or relatively random) and that there are sufficient non-NAs values to guarantee a robust imputation. None of these premises seem to be fulfilled within the datasets that are provided to us. Moreover, out of 160 variables, 100 of these variables are entirely NAs in the test set we are provided. Therefore, it is straightforward to understand that it will not be possible to use these variables to predict any of the classes in the test set. Overall, all variables for which all their values are NAs in the test set were not included in the study here presented.
+
+In addition, the first seven columns of the datasets do not correspond to any physical measurement but to dates, observing window, etc...(see Velloso et al., 2013 for details). Therefore, these variables were also excluded from this study. After this pre-processing, the data sets used to built the prediction tool was comprised by a total of 53 variables.
+
+Once I selected the adequate variables for this study I carefully examined plots of all variables with the aim of finding those variables that could potentially distinguish between the different types of classes. Unfortunately, when considered individually, none of the 53 variables seemed to be efficient to distinguish between classes. 
+
+On the other hand, given that the variables are all numeric values, a principal component analysis (PCA$^{[4]}$) seems, a priori, a convenient technique to reduce the dimensions of the dataset. This technique factorizes a dataset into a series of so called “left-singular vectors”, “right-singular vectors” and “singular values”. The left-singular vectors represent the average of potential multiple patterns present in the dataset, while the right singular vectors are associated to the variables that contribute to these patterns. In addition, the singular values are estimates of the variance of the data explained by the corresponding singular vectors.
+
+```{r, fig.width=10, echo=FALSE, cache=TRUE}
+suppressMessages(library(caret))
+training <- read.csv("pml-training.csv")
+test <- read.csv("pml-testing.csv")
+namesNA <- names(test)[seq_along(names(test))[sapply(test, function(x)all(is.na(x)))]]
+subTraining <- training[,-which(names(training) %in% namesNA)]
+subTraining <- subTraining[,-seq(1:7)]
+set.seed(1981)
+inTrain = createDataPartition(subTraining$classe, p = 3/4)[[1]]
+tTraining = subTraining[ inTrain,]
+tCrossv = subTraining[-inTrain,]
+svdTrain <- svd(scale(tTraining[,-c(ncol(tTraining))]))
+PercVarExpl <- svdTrain$d^2/sum(svdTrain$d^2)
+par(mfrow=c(1,2))
+plot(PercVarExpl,xlab = "Singular Value index",ylab = "Percentage of Variance", pch = 19)
+plot(svdTrain$v[,1],xlab = "Singular Value index",ylab = "First Right Singular Vector", pch = 19)
+```
+**Figures 1a (left) and b (right).** Figure 1a shows the percentage of variance explained by each PC, while the Figure 1b shows the "combination" factor associated to each variable for the first PC. Figure 1b can be interpreted as some measure of importance for each variable. For example, if the absolute value of one of the points in Figure 1b was significantly higher than the remaining points, one could isolate the variable in the dataset associated to this point and then conclude that such variable is the most important variable "shaping" the first PC. 
+
+Figure 1a shows the percentage of variable explained by each PC. I find that the first 17 variables explain 90% of the variability in the dataset, while to explain 95% of such variation 25 PC must be considered. If the reader is familiar with PCA, this result is already indicative that some of the variables in the dataset might be, up to some extent, redundant. Finally, Figure 1b shows a plot of the left singular vector corresponding to the 1st PC. The aim of this plot is to visualize if a certain variable makes a substantially higher contribution to a certain PC. Again, I find not possible to isolate a reduced sub-set of variables following these technique.  
+
+**3. Statistical Modeling**
+
+**3.1 "Endless" possibilities**
+
+It is important to recognize that there are a large number of different possibilities to address the prediction of the classes of activities (e.g. A,B,C,D and E). I will briefly mentioned some of these possibilities and then describe with more detail the final technique used for the prediction. 
+
+**Elastic-net regularization path for multinomial regression models$^{[5]}$**
+
+As I mentioned before, 25 of the PC explain 95% of the variation in the dataset. Therefore, it seems straightforward to consider a technique in which, rather than using the 53 variables mentioned before, we concentrate only on these 25 PC. This can be done in R within the "caret" package as follows: 
+
+```{r, eval=FALSE}
+library(caret)
+library(glmnet)
+trainPC <- train(tTraining$classe ~ .,method="glmnet",preProcess="pca",data=tTraining)
+confusionMatrix(tCrossv$classe,predict(trainPC,tCrossv))
+```
+
+A similar approach consists of using method = "multinom" within the library "nnet". Methods such as glmnet and multinom should be used here because we are trying to predict a factor variable with more than two levels. Such kind of prediction cannot be performed by, for example, glm. Details on the glmnet or the nnet packages can be found here: [glmnet](http://cran.r-project.org/web/packages/glmnet/glmnet.pdf), [nnet](http://cran.r-project.org/web/packages/nnet/nnet.pdf). 
+
+It is important to add a caveat about the use of these techniques. Both of these techniques are computational expensive. For example, in my computer (a 4 year old Mac Book pro 10.6.8), the duration of the process will be a few hours. This, although slightly improved, will not be solved by running the model in parallel using the "doMC" library. It is my understanding that to fully address this limitation it is necessary a "fine-tune" of the caret train() function. Unfortunately, at this stage, I am not familiar enough with the caret package as to provide here a definitive solution for this performance issue. 
+
+**Linear Discriminat Analysis (LDA)$^{[6]}$**
+
+Details on this technique can be found here: [LDA](http://stat.ethz.ch/R-manual/R-devel/library/MASS/html/lda.html) 
+
+The code using the caret package:
+
+```{r, eval=FALSE}
+trainLda <- train(tTraining$classe ~ .,method="lda",data=tTraining)
+confusionMatrix(tCrossv$classe,predict(trainLda,tCrossv)
+```
+
+Note that LDA can indeed be run with and without preProcessing = "pca". As expected, without preprocessing the prediction accuracy ($\sim 70\%$) is better than that attained using principal components. 
+
+**Random Forest and "boosting"" trees within the caret package$^{[2]}$**
+
+Details of these techniques in R can be found here: [R caret](http://caret.r-forge.r-project.org/training.html)
+
+The code using the caret package: 
+
+```{r, eval=FALSE}
+#method rf: performace issues. Extremely slow on a MacBook Pro 10.6.8
+trainRf <- train(tTraining$classe ~ .,method="rf",data=tTraining)
+confusionMatrix(tCrossv$classe,predict(trainRf,tCrossv))
+#method gbm: performace issues. Extremely slow on a MacBook Pro 10.6.8
+trainGbm <- train(tTraining$classe ~ .,method="gbm",data=tTraining, verbose = FALSE)
+confusionMatrix(tCrossv$classe,predict(trainGmb,tCrossv))
+```
+
+However, as in the case of glmnet, unless adequate tuning of the train() function is used the running time of this process exceeds a few hours (in this particular case I believe that reducing the amount of bootstrapping sampling will perhaps solve this issue). Among the 3 techniques discussed so far, Random Forest within the caret package delivers the highest accuracy ($\sim 95\%$)
+
+**4. Results**
+
+Based on the results derived from all the previous techniques, it is clear that the most adequate technique for this particular prediction exercise here is Random Forest. However, as mentioned before, method = "rf" within the caret package seems to have some performance issues that require fine-tuning. Therefore, given the fact that I am more familiar with the random Forest library in R, I used that library to build my final prediction model. The code is fairly simple and is described below. Again, further details can be found at the github repo [practicalML](https://github.com/jrzaurin/PracticalML). 
+
+```{r, cache=TRUE}
+suppressMessages(suppressWarnings(library(randomForest)))
+set.seed(921981)
+#we set importance = TRUE for plotting importance later.
+trainRf <- randomForest(tTraining$classe ~ . , data = tTraining, importance = TRUE)
+predCrossvRf <- predict(trainRf, tCrossv, type = "class")
+confusionMatrix(tCrossv$classe,predCrossvRf)
+```
+
+The accuracy attained by using a Random Forest on the processed training dataset is 99.7%. Details about useful parameters such as Sensitivity or Specificity, are described above. In addition, Figure 2 shows a visualization of the importance associated to the variables included in the tree. From the figure I find that variables such as yaw_belt, roll_belt, magnet_dumbbell are importance when predicting the "classe" variable, while magnet_forearm_y or accel_forearm_z among others, are almost negligible in terms of predictive power. 
+
+```{r, fig.width= 10, fig.height=7, cache=TRUE}
+varImpPlot(trainRf)
+```
+
+**Figure 2.** These plots are intended to give an idea of the relative importance of each variable considered during the random forest process. For simplicity, the Figure can be interpreted as follows: variables to the upper right-side of the plots are more important, with "importance" decreasing as we move towards the bottom left-side of the plots.
+
+From Figure 2 it is also apparent that $\sim 20$ variables explain most of the variability in the dataset. I find this result particularly interesting given that using a "simple" prediction three as follows: 
+
+```{r, eval=FALSE}
+library(tree)
+simpleTree <- tree(tTraining$classe ~ ., data = training)
+summary(simpleTree)
+```
+
+only 18 variables are used. In addition, the overlap between these variables and those appearing at most important in Figure 2 is quite significant. Although the accuracy is significantly smaller using a single prediction tree, I would not entirely exclude this technique since i) it seems to provide similar information about the dataset, ii) it is in general easier to interpret and visualize.
+
+Nonetheless, when the random forest is applied to test set of 20 observations provided the results are: 
+
+```{r, cache=TRUE}
+subTest <- test[,-which(names(test) %in% namesNA)]
+subTest <- subTest[,-seq(1:7)]
+predTestRf <- predict(trainRf, subTest, type = "class")
+predTestRf
+```
+
+**5. Conclusion**
+
+I have used the Vellose et al., 2013 dataset and explore a variety of techniques to predict the quality of an executing activity, quantified in 5 different classes (classe variable in the dataset : A, B, C, D and E). From the analysis presented here I find that the most powerful predictive technique is random Forest. Using this technique I find an impressive accuracy of $\sim 99\%$. In addition, I also find that $\sim 20$ variables can explained most of the variability within the dataset.  
+
+From the results, it is apparent to me that variables corresponding to parameters measured in the z and y axis are more relevant in the dataset that those in the x axis. At this stage it would be interesting to know the physical meaning behind these variables to better understand why they are important relative to some other variables in the dataset. 
+
+**References**
+
+[1] Velloso et al., 2013: [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf)
+
+[2] Breiman, Leo (2001): "Random Forests"
+
+[3] Wikipedia Page for Imputation: [WikiImputatiom](http://en.wikipedia.org/wiki/Imputation_(statistics))
+
+[4] Wikipedia Page for PAC: [WikiPCA](http://en.wikipedia.org/wiki/Singular)
+
+[5] Wikipedia Pahe for MULTINOM: [WikiMultiNom](http://en.wikipedia.org/wiki/Multinomial_logistic_regression)
